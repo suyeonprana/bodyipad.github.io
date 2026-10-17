@@ -56,27 +56,39 @@ function proj(px,py,c,w){var n=D.length-1,lo=Math.max(0,Math.round((c-w)*n)),hi=
 var BND=[0,.1656,.2733,.4,.56,.6533,.8089,.8967,1];
 function seg(i){return[BND[i],BND[i+1]]}
 function fOf(i,t){var s=seg(i);return s[0]+(s[1]-s[0])*Math.min(1,t/DUR[i])}
-// audio (single element, no preloading of all tracks)
-var URLS=AUD.map(function(n){return encodeURI(n.normalize?n.normalize('NFC'):n)});
-var dbg=$('#dbg');function log(m){dbg.style.display='block';dbg.textContent=m}
-var NFD=false;
-var au=new Audio();au.preload='auto';
+// audio: XHR download + Web Audio (works when <audio> streaming is blocked)
+var URLS=AUD.map(function(n){return encodeURI(n)});
+var dbg=$('#dbg');function log(m){dbg.style.display='block';dbg.textContent=m}function nolog(){dbg.style.display='none'}
 var cur=0,drag=false,wasP=false,dragF=0,lastSeek=0,disp=at(0).slice();
 function mark(){tl.forEach(function(e,i){e.className=i==cur?'t on':'t'})}
-var pendT=0;
-au.addEventListener('loadedmetadata',function(){if(isFinite(au.duration))DUR[cur]=au.duration;if(pendT){try{au.currentTime=pendT}catch(e){}pendT=0}});
-function go(i,t,play){t=t||0;if(play===undefined)play=true;cur=(i+8)%8;NFD=false;au.src=URLS[cur];pendT=t;mark();if(play){var p=au.play();if(p&&p.catch)p.catch(function(){})}}
+var AC=window.AudioContext||window.webkitAudioContext,ctx=null;
+try{ctx=new AC()}catch(e){log('Web Audio 미지원')}
+var buf=null,node=null,startedAt=0,offset=0,playing=false,want=false,token=0,unlocked=false;
+function pos(){return playing?offset+(ctx.currentTime-startedAt):offset}
+function startNode(){if(!buf||playing||!ctx)return;var s=ctx.createBufferSource();s.buffer=buf;s.connect(ctx.destination);
+ var o=Math.max(0,Math.min(offset,buf.duration-.05));
+ try{if(s.start)s.start(0,o);else s.noteGrainOn(0,o,buf.duration-o)}catch(e){log('재생 오류: '+e);return}
+ node=s;offset=o;startedAt=ctx.currentTime;playing=true;setP(true)}
+function stopNode(){if(!playing)return;offset=pos();playing=false;if(node){try{if(node.stop)node.stop(0);else node.noteOff(0)}catch(e){}try{node.disconnect()}catch(e){}node=null}setP(false)}
+function unlock(){if(!ctx||unlocked)return;unlocked=true;try{var b=ctx.createBuffer(1,1,22050),s=ctx.createBufferSource();s.buffer=b;s.connect(ctx.destination);if(s.start)s.start(0);else s.noteOn(0)}catch(e){}if(ctx.resume)try{ctx.resume()}catch(e){}}
+function load(i){var my=++token;buf=null;var x=new XMLHttpRequest();x.open('GET',URLS[i],true);x.responseType='arraybuffer';
+ x.onprogress=function(e){if(my!==token)return;if(e.lengthComputable)log('불러오는 중 '+Math.round(e.loaded/e.total*100)+'%');else log('불러오는 중…')};
+ x.onerror=function(){if(my===token)log('다운로드 실패: '+URLS[i])};
+ x.onload=function(){if(my!==token)return;if(x.status!==200&&x.status!==0){log('다운로드 실패 HTTP '+x.status+'\n'+URLS[i]);return}
+  log('변환 중…');var done=function(b){if(my!==token)return;buf=b;DUR[i]=b.duration;nolog();if(want)startNode()};
+  try{ctx.decodeAudioData(x.response,done,function(){if(my===token)log('디코딩 실패: '+URLS[i])})}catch(e){log('디코딩 오류: '+e)}};
+ x.send();log('불러오는 중…')}
+function go(i,t,play){t=t||0;if(play===undefined)play=true;stopNode();cur=(i+8)%8;offset=t;want=play;mark();load(cur)}
+var au={play:function(){want=true;if(buf)startNode()},pause:function(){want=false;stopNode()}};
+Object.defineProperty(au,'paused',{get:function(){return !playing}});
+Object.defineProperty(au,'currentTime',{get:function(){return pos()},set:function(v){if(!buf){offset=v;return}var w=playing;stopNode();offset=v;if(w)startNode()}});
 function setP(v){bt.firstChild.firstChild.setAttribute('d',IC[v?'pause':'play']);hd.className=v?'':'breathe'}
-au.addEventListener('play',function(){setP(true)});au.addEventListener('pause',function(){setP(false)});au.addEventListener('error',function(){var c=au.error?au.error.code:'?';
- if(!NFD&&au.normalize!==undefined&&AUD[cur].normalize){NFD=true;au.src=encodeURI(AUD[cur].normalize('NFD'));au.load();var q=au.play();if(q&&q.catch)q.catch(function(){});return}
- log('오디오 오류 code='+c+' (4=파일 없음/형식)\n'+au.src)});
-au.addEventListener('ended',function(){go(cur+1)});
-bt.addEventListener('click',function(){if(au.paused)au.play();else au.pause()});
+bt.addEventListener('click',function(){if(playing||want){au.pause()}else au.play()});
 bp.addEventListener('click',function(){go(cur-1)});bn.addEventListener('click',function(){go(cur+1)});
 // drag (touch + mouse)
 function apply(force){var n=Date.now();if(!force&&n-lastSeek<200)return;lastSeek=n;var i=0;for(;i<7;i++)if(dragF<seg(i)[1])break;var s=seg(i),t=Math.max(0,Math.min(.999,(dragF-s[0])/(s[1]-s[0])))*DUR[i];if(i!=cur)go(i,t,false);else{try{au.currentTime=t}catch(e){}}}
 function mv(cx_,cy_){var r=st.getBoundingClientRect();dragF=proj((cx_-r.left)/r.width,(cy_-r.top)/r.height,dragF,.035);apply(false)}
-function down(x,y){wasP=!au.paused;au.pause();dragF=fOf(cur,au.currentTime||0);drag=true;mv(x,y)}
+function down(x,y){wasP=want;au.pause();dragF=fOf(cur,au.currentTime||0);drag=true;mv(x,y)}
 function up(){if(!drag)return;drag=false;apply(true);if(wasP)au.play()}
 hd.addEventListener('touchstart',function(e){e.preventDefault();var t=e.touches[0];down(t.clientX,t.clientY)},false);
 hd.addEventListener('touchmove',function(e){e.preventDefault();if(drag){var t=e.touches[0];mv(t.clientX,t.clientY)}},false);
@@ -90,7 +102,7 @@ var spr=document.createElement('canvas');spr.width=spr.height=24;(function(){var
 var M=null,mi=new Image();mi.onload=function(){var c=document.createElement('canvas');c.width=GW;c.height=GH;var g=c.getContext('2d');g.drawImage(mi,0,0,GW,GH);var d=g.getImageData(0,0,GW,GH).data;M=new Uint8Array(GW*GH);for(var i=0;i<M.length;i++)M[i]=d[i*4+3]};mi.src=MASK;
 function ok(x,y){return x>=0&&y>=0&&x<GW&&y<GH&&M[(y|0)*GW+(x|0)]>110}
 var A=[],OFF=[0,.5,-.5,1.1,-1.1,1.7,-1.7];
-function sim(){if(!M)return;var hx=disp[0]*GW,hy=disp[1]*GH,live=!au.paused||drag,i,n;
+function sim(){if(!M)return;var hx=disp[0]*GW,hy=disp[1]*GH,live=playing||drag,i,n;
 c2.globalCompositeOperation='destination-out';c2.globalAlpha=1;c2.fillStyle='rgba(0,0,0,.08)';c2.fillRect(0,0,GW,GH);
 c2.globalCompositeOperation='lighter';c2.globalAlpha=live?.16:.08;c2.drawImage(spr,hx-23,hy-23,46,46);
 if(live)for(n=0;n<SPAWN&&A.length<MAXA;n++){var x=hx+(Math.random()-.5)*13,y=hy+(Math.random()-.5)*13;if(ok(x,y)){var L=100+Math.random()*100|0;A.push({x:x,y:y,a:Math.random()*6.28,l:L,m:L})}}
@@ -101,7 +113,7 @@ if(Math.random()<.02&&A.length<MAXA)A.push({x:a.x,y:a.y,a:a.a+(Math.random()<.5?
 var dx=a.x-hx,dy=a.y-hy,d=Math.sqrt(dx*dx+dy*dy);c2.globalAlpha=(a.l/a.m)*(.12+.5*Math.exp(-d/40));c2.drawImage(spr,a.x-2.5,a.y-2.5,5,5)}
 c2.globalAlpha=1}
 var last=0,tick=0;
-function frame(ts){window.requestAnimationFrame(frame);var tt=au.currentTime||0,p=at(drag?dragF:fOf(cur,tt)),k=drag?1:.12;
+function frame(ts){window.requestAnimationFrame(frame);if(playing&&buf&&pos()>=buf.duration-.05)go(cur+1,0,true);var tt=au.currentTime||0,p=at(drag?dragF:fOf(cur,tt)),k=drag?1:.12;
 if(!drag){var q=at(seg(cur)[0]),u=Math.min(1,tt/9),w=1-u*u*(3-2*u);p[0]+=(POS[cur][0]/RW-q[0])*w;p[1]+=(POS[cur][1]/RH-q[1])*w}
 disp[0]+=(p[0]-disp[0])*k;disp[1]+=(p[1]-disp[1])*k;hd.style.left=disp[0]*100+'%';hd.style.top=disp[1]*100+'%';
 if(++tick%2===0)sim()}
@@ -109,7 +121,7 @@ if(++tick%2===0)sim()}
 var started=false;
 function reveal(){if(started)return;started=true;$('#intro').className='out';st.className=''}
 var intro=$('#intro');
-function kick(){au.load();var p=au.play();if(p&&p.catch)p.catch(function(){});setTimeout(reveal,600)}
+function kick(){unlock();au.play();setTimeout(reveal,600)}
 intro.addEventListener('touchend',function(e){e.preventDefault();kick()},false);
 intro.addEventListener('click',kick,false);
 setP(false);go(0,0,false);frame();
